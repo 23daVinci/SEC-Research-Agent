@@ -1,0 +1,115 @@
+# Airflow 3 with LocalExecutor. Needs postgres from core.yml.
+# Start with: docker compose --profile airflow up -d --wait
+
+# Shared by every Airflow service. `&airflow-common` names the block and `<<: *airflow-common`
+# merges it into a service, so settings are written once.
+x-airflow-common: &airflow-common
+  image: agentic-rag/airflow:3.3.2
+  build:
+    context: ../airflow
+  restart: unless-stopped
+  profiles: [airflow]
+  networks:
+    - rag
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    # Every log line on stdout becomes one JSON object, which Alloy/Loki can parse by field.
+    AIRFLOW__LOGGING__JSON_LOGS: "true"
+    # LocalExecutor pre-forks one worker process per slot (default 32); keep it small for a laptop.
+    AIRFLOW__CORE__PARALLELISM: "8"
+    # Pick up new DAG files in 30s instead of the default 5 minutes (dev convenience).
+    AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "30"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set in infra/.env}
+    # Tasks call the api-server's Execution API; the JWT secret lets both sides trust each other.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?set in infra/.env}
+    AIRFLOW__API__SECRET_KEY: ${AIRFLOW_API_SECRET_KEY:?set in infra/.env}
+    # DEV ONLY: everyone who reaches the UI is admin (it is bound to localhost). Replace before
+    # exposing this anywhere else.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+  volumes:
+    - ../../dags:/opt/airflow/dags
+    - ../../plugins:/opt/airflow/plugins
+    - ../../logs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
+    airflow-init:
+      condition: service_completed_successfully
+
+services:
+  # One-shot: apply DB migrations, then exit. Everything else waits for it to succeed.
+  airflow-init:
+    <<: *airflow-common
+    restart: "no"
+    command: ["airflow", "db", "migrate"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  airflow-apiserver:
+    <<: *airflow-common
+    command: ["airflow", "api-server"]
+    environment:
+      <<: *airflow-env
+      AIRFLOW__API__WORKERS: "2"
+    ports:
+      - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/api/v2/version"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: ["airflow", "scheduler"]
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$${HOSTNAME}\""]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1500m
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: ["airflow", "dag-processor"]
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type DagProcessorJob --hostname \"$${HOSTNAME}\""]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: ["airflow", "triggerer"]
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type TriggererJob --hostname \"$${HOSTNAME}\""]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 512m

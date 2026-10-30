@@ -1,0 +1,86 @@
+# Logging stack: Loki (storage), Alloy (collector), Grafana (UI).
+# Start with: docker compose --profile observability up -d --wait
+
+services:
+  loki:
+    image: grafana/loki:3.7.9
+    restart: unless-stopped
+    profiles: [observability]
+    command: ["-config.file=/etc/loki/loki-config.yml"]
+    ports:
+      - "127.0.0.1:${LOKI_PORT:-3100}:3100"
+    volumes:
+      - ../observability/loki/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki-data:/loki
+    networks:
+      - rag
+    # No healthcheck: the image contains only the loki binary (no shell, wget or curl).
+    # Dependents use service_started; Alloy retries pushes and Grafana connects lazily.
+    # Readiness can be checked from the host: curl localhost:3100/ready
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  alloy:
+    image: grafana/alloy:v1.21.3
+    restart: unless-stopped
+    profiles: [observability]
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ../observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # Read-only access to the Docker API lets Alloy discover containers and read their logs.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # Remembers how far each log was read, so a restart neither re-sends nor skips lines.
+      - alloy-data:/var/lib/alloy/data
+    ports:
+      - "127.0.0.1:12345:12345"
+    networks:
+      - rag
+    depends_on:
+      loki:
+        condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 256m
+
+  grafana:
+    image: grafana/grafana:13.3.0
+    restart: unless-stopped
+    profiles: [observability]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set in infra/.env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - rag
+    depends_on:
+      loki:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+volumes:
+  loki-data:
+  alloy-data:
+  grafana-data:

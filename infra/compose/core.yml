@@ -1,0 +1,35 @@
+# Shared foundations: network, volumes, and the Postgres database.
+
+services:
+  postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set in infra/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in infra/.env}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+    ports:
+      # Bound to localhost only; other containers reach it as postgres:5432 on the network.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - rag
+    healthcheck:
+      # Passes only once Postgres accepts connections, which is what dependents should wait for.
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+networks:
+  rag:
+    name: agentic-rag
+
+volumes:
+  postgres-data:

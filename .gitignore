@@ -1,0 +1,15 @@
+# Secrets and local config
+.env
+
+# Airflow runtime output
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

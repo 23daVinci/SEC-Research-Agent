@@ -1,0 +1,8 @@
+# Entry point. Each concern lives in its own file under compose/ and is pulled in here,
+# so `docker compose up` from infra/ sees one project made of all of them.
+name: agentic-rag
+
+include:
+  - compose/core.yml
+  - compose/airflow.yml
+  - compose/observability.yml

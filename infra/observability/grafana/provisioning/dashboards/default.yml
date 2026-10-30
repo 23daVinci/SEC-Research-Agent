@@ -1,0 +1,13 @@
+# Tells Grafana to load every .json file in `path` as a dashboard at startup and to re-scan
+# periodically, so editing a dashboard file in git is enough to update it.
+apiVersion: 1
+
+providers:
+  - name: agentic-rag
+    folder: Agentic RAG
+    type: file
+    disableDeletion: true # dashboards come from files; don't let UI deletes drift from git
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

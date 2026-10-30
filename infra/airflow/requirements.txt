@@ -1,0 +1,2 @@
+# Extra Python packages for DAGs and tasks (embedding clients, parsers, ...).
+# Add them here and rebuild: docker compose build airflow-init

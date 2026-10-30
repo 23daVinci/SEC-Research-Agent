@@ -1,0 +1,61 @@
+// Alloy pipeline: find containers -> label them -> tail logs -> parse -> push to Loki.
+// Components are wired together by passing one component's output to another's argument.
+
+// 1. Discover containers through the Docker socket. Only this Compose project is
+//    collected, so unrelated containers on the same machine are ignored.
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=agentic-rag"]
+  }
+}
+
+// 2. Turn Docker metadata into Loki labels. Anything not kept here is dropped, which keeps
+//    label cardinality low (labels create streams; high-cardinality labels make Loki slow).
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+}
+
+// 3. Tail stdout/stderr of each discovered container.
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.containers.receiver]
+}
+
+// 4. Process each line before sending.
+loki.process "containers" {
+  forward_to = [loki.write.default.receiver]
+
+  stage.static_labels {
+    values = { env = "dev" }
+  }
+
+  // Only for lines that look like JSON: pull out `level` and make it a label.
+  // Plain-text lines pass through untouched.
+  stage.match {
+    selector = `{service=~".+"} |~ "^\\{"`
+
+    stage.json {
+      expressions = { level = "level" }
+    }
+
+    stage.labels {
+      values = { level = "" }
+    }
+  }
+}
+
+// 5. Send to Loki.
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
