@@ -1,0 +1,5 @@
+# Picked up automatically by gitleaks (pre-commit hook and CI).
+# Keep the built-in rules, and add allowlist entries only for specific, reviewed false positives,
+# scoped by rule and path rather than whole files.
+[extend]
+useDefault = true

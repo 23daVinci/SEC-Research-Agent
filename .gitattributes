@@ -1,0 +1,12 @@
+# Normalize line endings. Files bind-mounted into Linux containers, and shell scripts, must be
+# LF even when checked out on Windows (CRLF breaks `#!/usr/bin/env bash` and some parsers).
+* text=auto
+
+*.sh         text eol=lf
+*.alloy      text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.json       text eol=lf
+*.toml       text eol=lf
+*.py         text eol=lf
+Dockerfile   text eol=lf

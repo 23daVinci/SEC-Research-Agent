@@ -1,0 +1,26 @@
+# Weekly update PRs for pinned versions. Image tags are pinned on purpose (no `latest`), so
+# nothing updates unless Dependabot proposes it and CI passes.
+#
+# Note: infra/airflow/Dockerfile has ARG AIRFLOW_VERSION / PYTHON_VERSION next to the FROM tag
+# and compose/airflow.yml tags the built image. Bump all three together when upgrading Airflow.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /infra/airflow
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker-compose
+    directory: /infra/compose
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directory: /infra/airflow
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

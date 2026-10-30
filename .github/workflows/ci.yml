@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Least privilege: jobs only read the repo unless they declare more.
+permissions:
+  contents: read
+
+# Actions are pinned to commit SHAs (the comment shows the tag); Dependabot keeps them current.
+jobs:
+  gitleaks:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read # lets the action comment on findings in PRs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # full history, so old commits are scanned too
+      # Free for personal accounts. Organization-owned repos need a GITLEAKS_LICENSE secret.
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dockerfile-lint:
+    name: Dockerfile lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: infra/airflow/Dockerfile
+
+  compose-validate:
+    name: Compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # bootstrap generates a throwaway .env so required variables resolve; then render the
+      # fully merged config with every profile enabled to catch YAML or interpolation errors.
+      - name: Validate Compose files
+        run: |
+          bash infra/scripts/bootstrap.sh
+          cd infra
+          docker compose config -q

@@ -1,0 +1,7 @@
+# Local git hooks, managed by https://pre-commit.com
+# One-time setup per clone:  pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks # scans staged changes and blocks the commit if a secret is found
