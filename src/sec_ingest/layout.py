@@ -56,6 +56,10 @@ def ticker_map_key(moment: datetime) -> str:
     return f"bronze/reference/company_tickers/fetched={ts_for_key(moment)}.json"
 
 
+def membership_key(moment: datetime) -> str:
+    return f"bronze/reference/sp500_membership/fetched={ts_for_key(moment)}.csv"
+
+
 def submissions_key(cik: str, moment: datetime) -> str:
     return f"bronze/submissions/cik={cik10(cik)}/fetched={ts_for_key(moment)}.json"
 

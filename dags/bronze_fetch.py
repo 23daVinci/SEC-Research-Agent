@@ -39,14 +39,15 @@ def bronze_fetch():
         _, summary = plan.read_plan(pipeline.open_runtime().store, _run_id())
         return summary
 
-    @task
+    # Generous ceiling for a full-index run (~2h); a retry resumes because committed filings skip.
+    @task(execution_timeout=timedelta(hours=6))
     def fetch_filings() -> None:
         from sec_ingest import pipeline
 
         pipeline.configure_logging()
         pipeline.fetch_filings_stage(pipeline.open_runtime(), _run_id())
 
-    @task(trigger_rule="all_done")
+    @task(trigger_rule="all_done", execution_timeout=timedelta(hours=2))
     def fetch_companyfacts() -> None:
         from sec_ingest import pipeline
 

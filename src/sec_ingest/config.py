@@ -26,6 +26,7 @@ class Config:
     read_timeout_s: float
     bronze_root: Path
     user_agent: str | None = None
+    universe: str = "tickers"  # "tickers" (the explicit list) or "sp500"
 
 
 def load_config(path: Path | None = None, env: Mapping[str, str] | None = None) -> Config:
@@ -54,6 +55,7 @@ def load_config(path: Path | None = None, env: Mapping[str, str] | None = None) 
             read_timeout_s=float(raw["read_timeout_s"]),
             bronze_root=Path(env.get("BRONZE_ROOT") or raw["bronze_root"]),
             user_agent=(env.get("SEC_USER_AGENT") or "").strip() or None,
+            universe=str(raw.get("universe", "tickers")),
         )
     except KeyError as e:
         raise ConfigError(f"missing config key {e}") from e
@@ -62,6 +64,8 @@ def load_config(path: Path | None = None, env: Mapping[str, str] | None = None) 
         raise ConfigError("tickers must be non-empty and unique")
     if cfg.rate_limit_per_sec <= 0 or cfg.rate_limit_per_sec > 10:
         raise ConfigError("rate_limit_per_sec must be in (0, 10]; SEC hard cap is 10")
+    if cfg.universe not in ("tickers", "sp500"):
+        raise ConfigError("universe must be 'tickers' or 'sp500'")
     if cfg.max_attempts < 1:
         raise ConfigError("max_attempts must be >= 1")
     return cfg

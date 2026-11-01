@@ -84,3 +84,59 @@ def test_failure_still_writes_summary_and_raises(
 def test_fetch_without_a_plan_refuses(rt: Runtime) -> None:
     with pytest.raises(plan.PlanNotFound):
         pipeline.fetch_filings_stage(rt, "2026-01-01T00-00-00Z")
+
+
+def test_limit_plans_only_first_n_companies(rt: Runtime, monkeypatch: pytest.MonkeyPatch) -> None:
+    edgar = make_edgar()
+    edgar.routes[layout.TICKER_MAP_URL] = ticker_map(
+        (320193, "AAPL", "Apple"), (789019, "MSFT", "Microsoft")
+    )
+    wire(rt, edgar, monkeypatch)
+    result = pipeline.run_plan_stage(
+        rt, tickers=["AAPL", "MSFT"], limit=1, clock=lambda: datetime(2026, 10, 30, tzinfo=UTC)
+    )
+    assert result.summary["tickers"] == ["AAPL"] and result.summary["ciks_planned"] == 1
+
+
+def test_progress_is_logged_per_company_and_filing(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    wire(rt, make_edgar(), monkeypatch)
+    with caplog.at_level("INFO", logger="sec_ingest"):
+        run_id = pipeline.run_plan_stage(
+            rt, clock=lambda: datetime(2026, 10, 30, tzinfo=UTC)
+        ).run_id
+        pipeline.fetch_filings_stage(rt, run_id)
+    planned = [r for r in caplog.records if r.getMessage() == "planned company"]
+    done = [r for r in caplog.records if r.getMessage() == "filing processed"]
+    assert [(r.n, r.total) for r in planned] == [(1, 1)]  # type: ignore[attr-defined]
+    assert [(r.n, r.total, r.state) for r in done] == [(1, 2, "committed"), (2, 2, "committed")]  # type: ignore[attr-defined]
+
+
+def test_sp500_universe_plans_from_membership_with_provenance(
+    rt: Runtime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sec_ingest.plan import Company
+
+    wire(rt, make_edgar(), monkeypatch)
+    members = [Company("AAPL", CIK), Company("AAPL2", CIK), Company("ZZZ", "0000000999")]
+    info = {"name": "sp500", "snapshot": "bronze/reference/sp500_membership/x.csv", "rows": 3}
+    monkeypatch.setattr(Runtime, "membership", lambda self, clock: (members, info))
+    now = datetime(2026, 10, 30, tzinfo=UTC)
+
+    full = pipeline.run_plan_stage(rt, universe="sp500", clock=lambda: now)
+    assert full.summary["tickers"] == ["AAPL", "ZZZ"]  # AAPL2 dropped: same CIK as AAPL
+    assert full.summary["duplicate_tickers"] == {"AAPL2": "AAPL"}
+    assert full.summary["universe"]["snapshot"].endswith("x.csv")
+    assert full.summary["universe"]["limit"] is None
+    assert list(full.summary["unplannable"]) == ["0000000999"]  # ZZZ 404s but AAPL proceeds
+
+    limited = pipeline.run_plan_stage(
+        rt, universe="sp500", limit=1, run_id="2026-10-30T01-00-00Z", clock=lambda: now
+    )
+    assert limited.summary["tickers"] == ["AAPL"] and limited.summary["universe"]["limit"] == 1
+
+
+def test_unknown_universe_is_rejected(rt: Runtime) -> None:
+    with pytest.raises(ValueError, match="unknown universe"):
+        pipeline.run_plan_stage(rt, universe="nasdaq")

@@ -51,3 +51,10 @@ def test_rate_limit_above_sec_cap_rejected(tmp_path: Path) -> None:
 def test_duplicate_tickers_rejected(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="unique"):
         load_config(write(tmp_path, YAML.replace("[aapl, MSFT]", "[AAPL, aapl]")), env={})
+
+
+def test_universe_defaults_to_tickers_and_is_validated(tmp_path: Path) -> None:
+    assert load_config(write(tmp_path), env={}).universe == "tickers"
+    assert load_config(write(tmp_path, YAML + "universe: sp500\n"), env={}).universe == "sp500"
+    with pytest.raises(ConfigError, match="universe"):
+        load_config(write(tmp_path, YAML + "universe: nasdaq\n"), env={})

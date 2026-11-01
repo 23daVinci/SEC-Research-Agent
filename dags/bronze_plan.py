@@ -30,8 +30,18 @@ def bronze_plan():
 
         pipeline.configure_logging()
         # Derived from the DAG run, so a task retry reuses the same run_id and plan.
-        run_id = layout.ts_for_key(get_current_context()["dag_run"].run_after)
-        pipeline.run_plan_stage(pipeline.open_runtime(), run_id=run_id)
+        dag_run = get_current_context()["dag_run"]
+        run_id = layout.ts_for_key(dag_run.run_after)
+        # Optional trigger conf, e.g. {"universe": "sp500", "limit": 25}: pick the company source
+        # (default from config) and plan only the first N companies (staged rollout).
+        conf = dag_run.conf or {}
+        limit = conf.get("limit")
+        pipeline.run_plan_stage(
+            pipeline.open_runtime(),
+            run_id=run_id,
+            universe=conf.get("universe"),
+            limit=int(limit) if limit else None,
+        )
         return run_id
 
     plan_run_id = "{{ ti.xcom_pull(task_ids='build_plan') }}"

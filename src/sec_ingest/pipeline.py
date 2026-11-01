@@ -18,6 +18,7 @@ from .edgar_client import EdgarClient
 from .exhibits import ExhibitSelector, select_ex99
 from .fetch_filing import FilingOutcome
 from .ledger import Ledger
+from .membership import load_membership
 from .run_fetch import fetch_companyfacts, fetch_filings, write_fetch_summary
 from .validate import ValidationReport, validate_run
 
@@ -33,7 +34,19 @@ class FetchFailed(Exception):
 
 
 class _JsonFormatter(logging.Formatter):
-    _EXTRA = ("accession", "cik", "run_id", "url", "error")
+    _EXTRA = (
+        "accession",
+        "cik",
+        "run_id",
+        "url",
+        "error",
+        "ticker",
+        "n",
+        "total",
+        "state",
+        "bytes",
+        "to_fetch",
+    )
 
     def format(self, record: logging.LogRecord) -> str:
         out: dict[str, Any] = {
@@ -65,6 +78,10 @@ class Runtime:
     store: LocalBlobStore
     ledger: Ledger
 
+    def membership(self, clock: Clock) -> tuple[list[plan.Company], dict[str, Any]]:
+        """S&P 500 constituents, snapshotted into the blob store."""
+        return load_membership(self.store, clock=clock)
+
     def client(self, run_id: str) -> EdgarClient:
         c = self.cfg
         return EdgarClient(
@@ -91,23 +108,56 @@ def run_plan_stage(
     rt: Runtime,
     *,
     tickers: list[str] | None = None,
+    universe: str | None = None,
     run_id: str | None = None,
+    limit: int | None = None,
     clock: Clock = _utcnow,
 ) -> plan.PlanResult:
-    """Build the plan. An explicit `run_id` (Airflow) makes task retries reuse the same run."""
+    """Build the plan. An explicit `run_id` (Airflow) makes task retries reuse the same run.
+
+    Companies come from explicit `tickers`, else from `universe` ("tickers" = the configured
+    list, "sp500" = the constituents snapshot), which defaults to the config. `limit` plans only
+    the first N, for staged rollouts (25, then 100, then all).
+    """
+    source = "tickers" if tickers else (universe or rt.cfg.universe)
+    if source not in ("tickers", "sp500"):
+        raise ValueError(f"unknown universe {source!r}")
     run_id = run_id or plan.new_run_id(clock())
     as_of = layout.ts_from_key(run_id).date()
+    who: dict[str, Any]
+    if source == "sp500":
+        companies, info = rt.membership(clock)
+        who = {"companies": companies[:limit], "universe": {**info, "limit": limit}}
+    else:
+        who = {"tickers": (tickers or list(rt.cfg.tickers))[:limit]}
     with rt.client(run_id) as client:
         return plan.build_plan(
             client=client,
             store=rt.store,
             ledger=rt.ledger,
-            tickers=tickers or list(rt.cfg.tickers),
             run_id=run_id,
             as_of=as_of,
             window_months=rt.cfg.eight_k_window_months,
             clock=clock,
+            **who,
         )
+
+
+def preview_universe_stage(rt: Runtime, *, clock: Clock = _utcnow) -> dict[str, Any]:
+    """Fetch and snapshot the constituents and report problems, without planning anything."""
+    companies, info = rt.membership(clock)
+    unique, dropped = plan.dedupe_by_cik(companies)
+    run_id = plan.new_run_id(clock())
+    with rt.client(run_id) as client:
+        tm = client.get(layout.TICKER_MAP_URL)
+    rt.store.put_bytes(layout.ticker_map_key(clock()), tm.content)
+    in_sec = {layout.cik10(e["cik_str"]) for e in json.loads(tm.content).values()}
+    return {
+        **info,
+        "companies_after_dedupe": len(unique),
+        "duplicate_tickers": dropped,
+        "ciks_not_in_sec_ticker_map": sorted(c.cik for c in unique if c.cik not in in_sec),
+    }
 
 
 def fetch_filings_stage(
@@ -156,7 +206,7 @@ def companyfacts_stage(
     return results
 
 
-def validate_stage(rt: Runtime, run_id: str) -> ValidationReport:
+def validate_stage(rt: Runtime, run_id: str, *, full_audit: bool = False) -> ValidationReport:
     lines, summary = plan.read_plan(rt.store, run_id)
     report = validate_run(
         store=rt.store,
@@ -166,6 +216,7 @@ def validate_stage(rt: Runtime, run_id: str) -> ValidationReport:
         configured_tickers=summary.get("tickers", rt.cfg.tickers),
         plan_lines=lines,
         plan_summary=summary,
+        full_audit=full_audit,
     )
     rt.store.put_bytes(
         f"{layout.run_prefix(run_id)}/validation.json",

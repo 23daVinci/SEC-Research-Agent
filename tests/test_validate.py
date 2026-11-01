@@ -145,3 +145,44 @@ def test_missing_10q_without_exception_fails_check_2(env: Env) -> None:
     env.ledger.clear()
     errors = env.validate().errors
     assert any(e.startswith("[2]") for e in errors)
+
+
+def test_incremental_validation_skips_older_runs_but_full_audit_catches_them(env: Env) -> None:
+    """Tampering with a filing committed in an earlier run: only --full notices."""
+    key = f"{layout.filing_prefix(CIK, Q)}/primary__q.htm"
+    env.store.put_bytes(key, b"tampered", overwrite=True)
+    lines, summary = plan.read_plan(env.store, RUN)
+
+    def run(run_id: str, full: bool):  # type: ignore[no-untyped-def]
+        return validate_run(
+            store=env.store,
+            ledger=env.ledger,
+            run_id=run_id,
+            configured_tickers=["AAPL"],
+            plan_lines=lines,
+            plan_summary=summary,
+            full_audit=full,
+        )
+
+    later = "2026-11-01T00-00-00Z"  # the filings above were committed by RUN, not this run
+    incremental = run(later, full=False)
+    assert incremental.filings_audited == 0
+    assert not any(e.startswith("[4]") for e in incremental.errors)
+
+    full = run(later, full=True)
+    assert full.filings_audited == 2 and full.full_audit
+    assert any("hash mismatch" in e for e in full.errors)
+
+
+def test_unplannable_company_is_a_loud_validation_error(env: Env) -> None:
+    lines, summary = plan.read_plan(env.store, RUN)
+    summary = {**summary, "unplannable": {"0000000999": "GONE: HTTP 404"}}
+    rep = validate_run(
+        store=env.store,
+        ledger=env.ledger,
+        run_id=RUN,
+        configured_tickers=["AAPL"],
+        plan_lines=lines,
+        plan_summary=summary,
+    )
+    assert any(e.startswith("[1]") and "0000000999" in e for e in rep.errors)

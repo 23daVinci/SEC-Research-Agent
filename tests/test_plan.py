@@ -185,3 +185,76 @@ def test_read_plan_requires_both_files(store: LocalBlobStore) -> None:
     store.put_bytes(layout.plan_key(RUN), b"")
     with pytest.raises(plan.PlanNotFound):  # summary is the completion marker
         plan.read_plan(store, RUN)
+
+
+def test_dedupe_by_cik_keeps_first_ticker_and_reports_dropped() -> None:
+    cs = [
+        plan.Company("GOOGL", "0001652044"),
+        plan.Company("AAPL", AAPL),
+        plan.Company("GOOG", "0001652044"),
+    ]
+    kept, dropped = plan.dedupe_by_cik(cs)
+    assert [c.ticker for c in kept] == ["GOOGL", "AAPL"]
+    assert dropped == {"GOOG": "GOOGL"}
+
+
+def test_plan_from_companies_dedupes_share_classes(store: LocalBlobStore, ledger: Ledger) -> None:
+    """Two tickers, one CIK: submissions fetched once, one set of decisions, dupe recorded."""
+    edgar = aapl_edgar(BASE_ROWS)
+    result = plan.build_plan(
+        client=edgar.client(RUN),
+        store=store,
+        ledger=ledger,
+        companies=[plan.Company("AAPL", AAPL), plan.Company("AAPL2", AAPL)],
+        universe={"source": "test", "count": 2},
+        run_id=RUN,
+        as_of=AS_OF,
+        window_months=6,
+        clock=lambda: NOW,
+    )
+    assert edgar.requested.count(layout.submissions_url(AAPL)) == 1
+    assert result.summary["ciks_planned"] == 1
+    assert result.summary["duplicate_tickers"] == {"AAPL2": "AAPL"}
+    assert result.summary["universe"] == {"source": "test", "count": 2}
+    accessions = [d.row.accession for d in result.decisions]
+    assert len(accessions) == len(set(accessions))
+
+
+def test_plan_requires_exactly_one_of_tickers_or_companies(
+    store: LocalBlobStore, ledger: Ledger
+) -> None:
+    kw = dict(
+        client=aapl_edgar(BASE_ROWS).client(RUN),
+        store=store,
+        ledger=ledger,
+        run_id=RUN,
+        as_of=AS_OF,
+        window_months=6,
+    )
+    with pytest.raises(ValueError):
+        plan.build_plan(**kw)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        plan.build_plan(tickers=["AAPL"], companies=[plan.Company("AAPL", AAPL)], **kw)  # type: ignore[arg-type]
+
+
+def test_unplannable_company_does_not_block_the_others(
+    store: LocalBlobStore, ledger: Ledger
+) -> None:
+    edgar = aapl_edgar(BASE_ROWS)
+    edgar.routes[layout.TICKER_MAP_URL] = ticker_map(
+        (320193, "AAPL", "Apple Inc."), (999, "GONE", "Delisted Co")
+    )  # GONE's submissions URL is unrouted, so it 404s
+    result = plan.build_plan(
+        client=edgar.client(RUN),
+        store=store,
+        ledger=ledger,
+        tickers=["GONE", "AAPL"],
+        run_id=RUN,
+        as_of=AS_OF,
+        window_months=6,
+        clock=lambda: NOW,
+    )
+    assert result.summary["ciks_planned"] == 1
+    assert list(result.summary["unplannable"]) == ["0000000999"]
+    assert "GONE" in result.summary["unplannable"]["0000000999"]
+    assert any(d.cik == AAPL and d.decision == "fetch" for d in result.decisions)

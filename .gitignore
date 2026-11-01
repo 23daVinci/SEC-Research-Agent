@@ -7,6 +7,9 @@ logs/
 # Bronze data (raw SEC filings, ledger, manifests)
 data/
 
+# Local project docs (scope and design notes, kept out of the repo)
+docs/
+
 # Python
 __pycache__/
 *.pyc

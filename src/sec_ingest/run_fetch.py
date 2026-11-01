@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
@@ -14,6 +15,8 @@ from .edgar_client import EdgarClient, EdgarError
 from .exhibits import ExhibitSelector, select_ex99
 from .fetch_filing import FilingOutcome, fetch_filing
 from .ledger import Ledger
+
+log = logging.getLogger(__name__)
 
 
 def fetch_filings(
@@ -30,8 +33,10 @@ def fetch_filings(
 
     Per-filing failures are collected, not raised; the caller fails the task afterwards.
     """
-    return [
-        fetch_filing(
+    todo = [line for line in plan_lines if line["decision"] == "fetch"]
+    outcomes: list[FilingOutcome] = []
+    for n, line in enumerate(todo, 1):
+        outcome = fetch_filing(
             client=client,
             store=store,
             ledger=ledger,
@@ -40,9 +45,21 @@ def fetch_filings(
             exhibit_selector=exhibit_selector,
             clock=clock,
         )
-        for line in plan_lines
-        if line["decision"] == "fetch"
-    ]
+        outcomes.append(outcome)
+        log.info(
+            "filing processed",
+            extra={
+                "run_id": run_id,
+                "n": n,
+                "total": len(todo),
+                "ticker": line.get("ticker"),
+                "cik": line["cik"],
+                "accession": outcome.accession,
+                "state": outcome.state,
+                "bytes": outcome.bytes_written,
+            },
+        )
+    return outcomes
 
 
 def fetch_companyfacts(

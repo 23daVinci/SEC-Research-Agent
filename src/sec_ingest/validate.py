@@ -18,13 +18,21 @@ from .ledger import Ledger
 class ValidationReport:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    filings_audited: int = 0  # filings whose documents were re-hashed (check 4)
+    full_audit: bool = False
 
     @property
     def ok(self) -> bool:
         return not self.errors
 
     def to_dict(self) -> dict[str, Any]:
-        return {"ok": self.ok, "errors": self.errors, "warnings": self.warnings}
+        return {
+            "ok": self.ok,
+            "errors": self.errors,
+            "warnings": self.warnings,
+            "filings_audited": self.filings_audited,
+            "full_audit": self.full_audit,
+        }
 
 
 def _accessions_in_facts(raw: bytes) -> set[str]:
@@ -45,8 +53,11 @@ def validate_run(
     configured_tickers: Sequence[str],
     plan_lines: Sequence[Mapping[str, Any]],
     plan_summary: Mapping[str, Any],
+    full_audit: bool = False,
 ) -> ValidationReport:
-    rep = ValidationReport()
+    """`full_audit=False` re-hashes only filings committed in this run (cheap at any scale);
+    `True` re-hashes every committed filing (an occasional integrity audit)."""
+    rep = ValidationReport(full_audit=full_audit)
     ciks = sorted(plan_summary.get("coverage_history_files_followed", {}))
 
     # 1. every configured ticker resolved to exactly one CIK
@@ -55,6 +66,9 @@ def validate_run(
             f"[1] planned {plan_summary.get('ciks_planned')} CIKs for "
             f"{len(configured_tickers)} configured tickers"
         )
+
+    for cik, why in plan_summary.get("unplannable", {}).items():
+        rep.errors.append(f"[1] {cik} could not be planned: {why}")
 
     # 2. committed 10-K and 10-Q per CIK, or a documented exception
     current = {(r.cik, r.form) for r in ledger.current_periodic()}
@@ -80,6 +94,9 @@ def validate_run(
             continue
         meta = json.loads(store.get_bytes(key))
         meta_accessions[meta["accession"]] += 1
+        if not full_audit and meta["run_id"] != run_id:
+            continue
+        rep.filings_audited += 1
         folder = key.removesuffix(layout.META_FILENAME)
         for doc in meta["documents"]:
             path = folder + doc["filename"]

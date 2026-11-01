@@ -104,6 +104,16 @@ python -m sec_ingest validate --run-id <id>
 python -m sec_ingest rebuild-ledger           # rebuild ledger.sqlite from _meta.json files
 ```
 
+**Universe.** `config/ingest.yml` defaults to the explicit ticker list. For the S&P 500, plan with
+`--universe sp500` (CLI) or trigger `bronze_plan` with conf `{"universe": "sp500"}`. The constituents
+come from the community `datasets/s-and-p-500-companies` CSV (it carries CIKs), saved as a dated
+snapshot with its hash; it is not point-in-time. Share classes (GOOG/GOOGL) are de-duplicated by CIK.
+Roll out in stages with `--limit 25`, then `100`, then everything (`{"limit": 25}` in the DAG conf);
+committed filings are skipped on each wider run. `python -m sec_ingest universe` previews the list
+without planning. A company whose submissions 404 is recorded as `unplannable` in the plan summary
+and fails validation, without blocking the others. `validate` re-hashes only the current run's
+filings; add `--full` to audit everything.
+
 Checks: `pytest` (no network; `--live` is reserved for live tests), `ruff check .`, `ruff format --check .`, `mypy`.
 
 8-K exhibits: the Type column on each filing's `-index.htm` page identifies EX-99 press releases

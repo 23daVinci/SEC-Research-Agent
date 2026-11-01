@@ -6,6 +6,7 @@ Planning only reads the ledger. Rows are marked `planned` by the fetch step.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -13,7 +14,7 @@ from typing import Any
 
 from . import layout
 from .blobstore import BlobStore
-from .edgar_client import EdgarClient
+from .edgar_client import EdgarClient, TerminalHTTPError
 from .ledger import Ledger
 from .selection import (
     REASON_ALREADY_COMMITTED,
@@ -30,6 +31,8 @@ from .selection import (
 )
 
 SCHEMA_VERSION = 1
+
+log = logging.getLogger(__name__)
 
 
 class TickerResolutionError(Exception):
@@ -64,6 +67,25 @@ def company_names(ticker_map: Mapping[str, Any]) -> dict[str, str]:
 
 
 @dataclass(frozen=True)
+class Company:
+    ticker: str
+    cik: str  # 10-digit string; the join key
+
+
+def dedupe_by_cik(companies: Sequence[Company]) -> tuple[list[Company], dict[str, str]]:
+    """One entry per CIK. Share classes (GOOG/GOOGL, FOX/FOXA) file under one CIK, so planning
+    both would duplicate every decision. Keeps the first ticker; returns {dropped: kept}."""
+    kept: dict[str, Company] = {}
+    dropped: dict[str, str] = {}
+    for c in companies:
+        if c.cik in kept:
+            dropped[c.ticker] = kept[c.cik].ticker
+        else:
+            kept[c.cik] = c
+    return list(kept.values()), dropped
+
+
+@dataclass(frozen=True)
 class PlanResult:
     run_id: str
     decisions: list[PlanDecision]
@@ -84,28 +106,46 @@ def build_plan(
     client: EdgarClient,
     store: BlobStore,
     ledger: Ledger,
-    tickers: Sequence[str],
     run_id: str,
     as_of: date,
     window_months: int,
+    tickers: Sequence[str] | None = None,
+    companies: Sequence[Company] | None = None,
+    universe: Mapping[str, Any] | None = None,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> PlanResult:
+    """Plan from `tickers` (resolved to CIKs via the SEC map, all-or-nothing) or from ready-made
+    `companies` (e.g. an index membership list). `universe` describes where they came from."""
+    if (tickers is None) == (companies is None):
+        raise ValueError("pass exactly one of tickers or companies")
     # 1-2. snapshot the ticker map, resolve every ticker (all-or-nothing)
     tm = client.get(layout.TICKER_MAP_URL)
     store.put_bytes(layout.ticker_map_key(clock()), tm.content)
     ticker_map = json.loads(tm.content)
-    cik_by_ticker = resolve_ciks(ticker_map, tickers)
+    if companies is None:
+        assert tickers is not None
+        companies = [Company(t, c) for t, c in resolve_ciks(ticker_map, tickers).items()]
+    unique, duplicate_tickers = dedupe_by_cik(companies)
     names = company_names(ticker_map)
 
     committed = ledger.committed_accessions()
     decisions: list[PlanDecision] = []
     coverage: dict[str, int] = {}
     exceptions: dict[str, list[str]] = {}
+    unplannable: dict[str, str] = {}
     row_extras: dict[str, dict[str, Any]] = {}
 
-    for ticker, cik in cik_by_ticker.items():
+    for n, company in enumerate(unique, 1):
+        ticker, cik = company.ticker, company.cik
         # 3. submissions snapshot, then 4. the gap guard: follow history until covered
-        sub = client.get(layout.submissions_url(cik))
+        try:
+            sub = client.get(layout.submissions_url(cik))
+        except TerminalHTTPError as e:
+            # One bad CIK must not block the other 499. It is recorded in the plan summary and
+            # validation reports it as an error, so it is loud but not blocking.
+            unplannable[cik] = f"{ticker}: {e}"
+            log.error("company unplannable", extra={"cik": cik, "ticker": ticker, "error": str(e)})
+            continue
         store.put_bytes(layout.submissions_key(cik, clock()), sub.content)
         rows, files = _parse_submissions(sub.content)
         remaining = sorted(files, key=lambda f: f.get("filingTo", ""), reverse=True)
@@ -129,8 +169,20 @@ def build_plan(
 
         # 5-6. select, then diff against the ledger
         picked = select_candidates(cik, ticker, rows, as_of=as_of, window_months=window_months)
-        decisions += diff_against_ledger(picked, committed)
+        decided = diff_against_ledger(picked, committed)
+        decisions += decided
         row_extras[cik] = {"company_name": names.get(cik)}
+        log.info(
+            "planned company",
+            extra={
+                "run_id": run_id,
+                "ticker": ticker,
+                "cik": cik,
+                "n": n,
+                "total": len(unique),
+                "to_fetch": sum(d.decision == "fetch" for d in decided),
+            },
+        )
 
     refresh = sorted(
         {
@@ -138,15 +190,22 @@ def build_plan(
             for d in decisions
             if d.decision == "fetch" and d.reason in (REASON_LATEST_10K, REASON_LATEST_10Q)
         }
-        | {c for c in cik_by_ticker.values() if ledger.companyfacts_snapshot_count(c) == 0}
+        | {
+            c.cik
+            for c in unique
+            if c.cik in coverage and ledger.companyfacts_snapshot_count(c.cik) == 0
+        }
     )
     to_fetch = sum(d.decision == "fetch" for d in decisions)
     summary: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "as_of": as_of.isoformat(),
-        "tickers": list(cik_by_ticker),
-        "ciks_planned": len(cik_by_ticker),
+        "tickers": [c.ticker for c in unique],
+        "ciks_planned": len(coverage),
+        "unplannable": unplannable,
+        "duplicate_tickers": duplicate_tickers,
+        "universe": dict(universe) if universe else None,
         "to_fetch": to_fetch,
         "skipped_already_committed": sum(d.reason == REASON_ALREADY_COMMITTED for d in decisions),
         "rejected": sum(d.reason == REASON_AMENDMENT for d in decisions),
