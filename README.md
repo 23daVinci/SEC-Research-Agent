@@ -83,10 +83,40 @@ Run from `infra/`. `COMPOSE_PROFILES` in `.env` makes these cover the whole stac
 After a reboot or Docker Desktop restart the containers stay stopped; run `docker compose up -d` again.
 Data lives in named volumes and survives.
 
+## Bronze ingestion (SEC EDGAR)
+
+Raw filings and XBRL `companyfacts` for the configured tickers land in `data/` (gitignored).
+Design: `docs/Bronze Ingestion_ Design Doc (Stage A).md`. Code: `src/sec_ingest/`; config: `config/ingest.yml`.
+
+Two DAGs: `bronze_plan` writes an immutable plan and triggers `bronze_fetch`, which executes it.
+Both are manual-trigger for now. Set `SEC_USER_AGENT="Your Name you@example.com"` in `infra/.env`
+first (SEC requires it); the package refuses to make requests without it.
+
+Run it without Airflow (from the repo root):
+
+```bash
+python -m venv .venv && .venv/Scripts/pip install -e ".[dev]"   # bin/pip on macOS/Linux
+export SEC_USER_AGENT="Your Name you@example.com"
+python -m sec_ingest plan --tickers AAPL      # prints the summary; run_id goes to stderr
+# review data/_manifests/runs/run_id=<id>/plan.jsonl by eye, then:
+python -m sec_ingest fetch --run-id <id>      # filings, companyfacts, validation, summary
+python -m sec_ingest validate --run-id <id>
+python -m sec_ingest rebuild-ledger           # rebuild ledger.sqlite from _meta.json files
+```
+
+Checks: `pytest` (no network; `--live` is reserved for live tests), `ruff check .`, `ruff format --check .`, `mypy`.
+
+8-K exhibits: the Type column on each filing's `-index.htm` page identifies EX-99 press releases
+(`index.json` has no document types); see design doc section 10 and `sec_ingest/exhibits.py`.
+
 ## Layout
 
 ```
 dags/                       Airflow DAGs (bind-mounted; new files picked up within ~30s)
+src/sec_ingest/             Bronze ingestion package (mounted into the Airflow containers)
+config/ingest.yml           tickers, 8-K window, rate limit, timeouts
+tests/                      unit tests (no network)
+spikes/                     one-off investigations
 plugins/                    Airflow plugins
 logs/                       Airflow task log files (gitignored)
 infra/

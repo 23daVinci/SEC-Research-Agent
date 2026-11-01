@@ -1,0 +1,7 @@
+tickers: [AAPL, MSFT, JPM, BRK-B, PGR, XOM, WMT, UNH, SPG, CAT]
+eight_k_window_months: 6
+rate_limit_per_sec: 5
+max_attempts: 3
+connect_timeout_s: 10
+read_timeout_s: 60
+bronze_root: ./data

@@ -2,6 +2,7 @@
 
 `failing_task` fails on purpose so there is an error-level log to look for in Grafana.
 """
+
 from __future__ import annotations
 
 import logging

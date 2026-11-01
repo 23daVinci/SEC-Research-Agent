@@ -29,7 +29,15 @@ x-airflow-common: &airflow-common
     # DEV ONLY: everyone who reaches the UI is admin (it is bound to localhost). Replace before
     # exposing this anywhere else.
     AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+    # Bronze ingestion package (mounted below) and its settings.
+    PYTHONPATH: /opt/airflow/src
+    SEC_USER_AGENT: ${SEC_USER_AGENT:-}
+    BRONZE_ROOT: /opt/airflow/data
+    SEC_INGEST_CONFIG: /opt/airflow/config/ingest.yml
   volumes:
+    - ../../src:/opt/airflow/src
+    - ../../config:/opt/airflow/config
+    - ../../data:/opt/airflow/data
     - ../../dags:/opt/airflow/dags
     - ../../plugins:/opt/airflow/plugins
     - ../../logs:/opt/airflow/logs

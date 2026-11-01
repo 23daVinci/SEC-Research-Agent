@@ -1,2 +1,7 @@
 # Extra Python packages for DAGs and tasks (embedding clients, parsers, ...).
 # Add them here and rebuild: docker compose build airflow-init
+
+# sec_ingest runtime dependencies (the package itself is mounted from ./src)
+httpx
+pyyaml
+python-dateutil
