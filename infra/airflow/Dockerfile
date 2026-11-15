@@ -1,4 +1,4 @@
-FROM apache/airflow:3.3.2-python3.12
+FROM apache/airflow:3.4.0-python3.12
 
 # Must match the base image. Used to pick the matching constraints file.
 ARG AIRFLOW_VERSION=3.3.2
